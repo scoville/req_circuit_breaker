@@ -1,0 +1,19 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+
+metadata:
+  name: req_circuit_breaker
+  description: Req plugin that stops sending requests to a failing service
+
+spec:
+  type: library
+  businessUnit: hr
+  public: true
+  lifecycle: production
+  owner: group:default/poblano
+  github:
+    team: poblano
+  technologies:
+    - elixir
+  capabilities:
+    - circuit-breaking

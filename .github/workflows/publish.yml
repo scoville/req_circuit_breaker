@@ -1,0 +1,58 @@
+name: Publish
+
+env:
+  ELIXIR_VERSION: "1.20.4"
+  OTP_VERSION: "29"
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: read
+
+# Do not cancel in-progress workflows, because `mix hex.publish` uploads the
+# package and the documentation, and cancelling between the two would publish
+# one without the other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish Hex package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: hex
+    steps:
+      - name: Git clone the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+
+      - name: Set up Elixir
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Install Dependencies
+        run: mix deps.get
+
+      - name: Assert the version matches the release tag
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version="$(mix eval --no-compile 'IO.puts(Mix.Project.config()[:version])')"
+
+          if [ "$version" != "$TAG" ]; then
+            echo "mix.exs version $version does not match tag $TAG" >&2
+            exit 1
+          fi
+
+      - name: Publish to Hex
+        run: mix hex.publish --yes
+        env:
+          HEX_API_KEY: ${{ secrets.HEX_PUBLISH_KEY }}

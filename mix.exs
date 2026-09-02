@@ -74,7 +74,7 @@ defmodule ReqCircuitBreaker.MixProject do
   end
 
   defp description do
-    "Req plugin that stops sending requests to a failing service"
+    "Circuit breaker plugin for Req using Fuse"
   end
 
   # Run "mix help deps" to learn about dependencies.

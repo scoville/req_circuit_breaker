@@ -14,5 +14,8 @@ format. This project adheres to [Semantic Versioning](https://semver.org/spec/v2
 - Add `ReqCircuitBreaker.record_failure/1` for recording a failure.
 - Add `ReqCircuitBreaker.run/3` for running any function under a circuit
   breaker.
+- Add `ReqCircuitBreaker.attach/2` for protecting a `Req` request.
+- Add `ReqCircuitBreaker.failure?/1`, the default function for deciding whether
+  a response or exception counts as a failure of the service.
 
 [Unreleased]: https://github.com/scoville/req_circuit_breaker/commits/main

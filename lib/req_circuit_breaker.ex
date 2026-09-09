@@ -30,6 +30,34 @@ defmodule ReqCircuitBreaker do
   Trying to use a circuit breaker without installing it first results in
   `{:error, %ReqCircuitBreaker.NotInstalledError{}}`.
 
+  ## What counts as a failure
+
+  By default only 5xx responses and transport or protocol errors count as
+  failures.
+
+  A 429 does not count as failure by default. Whether it should depends on the
+  context of the application.
+
+  An error raised by the client, such as a `Req.TooManyRedirectsError` or a
+  decoding error, also does not count as failure.
+
+  You can change the defaults by passing the `:failure?` option. It receives a
+  `t:Req.Response.t/0` or an `t:Exception.t/0`:
+
+      [base_url: "https://payments.example"]
+      |> Req.new()
+      |> ReqCircuitBreaker.attach(
+        name: MyApp.CircuitBreaker.Payments,
+        failure?: fn
+          %Req.Response{status: 429} -> true
+          other -> ReqCircuitBreaker.failure?(other)
+        end
+      )
+
+  You can use `ReqCircuitBreaker` for arbitrary function calls without Req as
+  well by using `run/3`. Its `:failure?` function takes the return value of the
+  given function.
+
   ## Performance
 
   `:fuse` keeps one process for the whole VM, and it owns a public ETS table
@@ -50,6 +78,8 @@ defmodule ReqCircuitBreaker do
 
   alias ReqCircuitBreaker.NotInstalledError
   alias ReqCircuitBreaker.OpenError
+
+  @request_opts [:name, :failure?, :mode]
 
   @default_failures 10
   @default_within 10_000
@@ -294,4 +324,175 @@ defmodule ReqCircuitBreaker do
 
   defp error_tuple?({:error, _}), do: true
   defp error_tuple?(_result), do: false
+
+  ## Req integration
+
+  @doc """
+  Adds a circuit breaker to a `Req` request.
+
+  The circuit is checked before each attempt, including each retry and each
+  redirect hop, and at most one failure is recorded per request.
+
+  ## Options
+
+  - `:name` (required) - the name of the circuit breaker.
+  - `:failure?` - a 1-arity function taking a `Req.Response` or an exception
+    and returning `true` if it counts as a failure. Defaults to `failure?/1`.
+  - `:mode` - see `t:mode/0`.
+
+  A request refused by an open circuit returns `{:error, %OpenError{}}` from
+  `Req.request/2`, and raises it from `Req.request!/2`.
+
+  A redirect is followed before the outcome is recorded, so a failure at the
+  redirect target counts against the breaker named on the request, whatever
+  host answered. Pass `redirect: false`, or a `:failure?` that inspects the
+  response, if that is not what you want.
+
+  The options are stored under the single `:circuit_breaker` request option.
+  Pass `circuit_breaker: false` on a request to skip an attached breaker.
+
+  Passing a list on a request replaces these options rather than merging into
+  them, as `Req` does for every option, so a request-time list has to repeat
+  `:name`.
+
+  ## Examples
+
+      [base_url: "https://payments.example"]
+      |> Req.new()
+      |> ReqCircuitBreaker.attach(name: MyApp.CircuitBreaker.Payments)
+      |> Req.get(url: "/charges")
+  """
+  @spec attach(Req.Request.t(), keyword) :: Req.Request.t()
+  def attach(%Req.Request{} = request, opts) do
+    opts = Keyword.validate!(opts, @request_opts)
+    _name = Keyword.fetch!(opts, :name)
+
+    request
+    |> delete_steps()
+    |> Req.Request.register_options([:circuit_breaker])
+    |> Req.merge(circuit_breaker: opts)
+    |> Req.Request.prepend_request_steps(circuit_breaker: &check_circuit/1)
+    |> insert_response_step()
+    |> Req.Request.append_error_steps(circuit_breaker: &record_result/1)
+  end
+
+  # Attaching twice would otherwise append a second copy of every step, and
+  # record two failures per request.
+  defp delete_steps(%Req.Request{} = request) do
+    %{
+      request
+      | request_steps: Keyword.delete(request.request_steps, :circuit_breaker),
+        response_steps:
+          Keyword.delete(request.response_steps, :circuit_breaker),
+        error_steps: Keyword.delete(request.error_steps, :circuit_breaker)
+    }
+  end
+
+  # The response step runs after `retry`, so a retried request records one
+  # failure rather than one per attempt, and before `handle_http_errors`, which
+  # raises when `http_errors: :raise` and would skip the recording entirely.
+  defp insert_response_step(%Req.Request{response_steps: steps} = request) do
+    case Enum.split_while(steps, &(elem(&1, 0) != :handle_http_errors)) do
+      {_steps, []} ->
+        raise """
+        Req registers no :handle_http_errors response step
+
+        ReqCircuitBreaker inserts its own response step before the
+        :handle_http_errors step. The Req version in use appears to have renamed
+        or removed it, and this version of ReqCircuitBreaker is not compatible.
+        """
+
+      {before, rest} ->
+        step = {:circuit_breaker, &record_result/1}
+        %{request | response_steps: before ++ [step | rest]}
+    end
+  end
+
+  @doc """
+  Returns `true` if a `Req` response or exception counts as a failure of the
+  service.
+
+  This is the default for `attach/2`. See module documentation for details.
+
+  ## Examples
+
+      iex> failure?(%Req.Response{status: 503})
+      true
+
+      iex> failure?(%Req.Response{status: 429})
+      false
+
+      iex> failure?(%Req.TransportError{reason: :econnrefused})
+      true
+
+      iex> failure?(%Req.TooManyRedirectsError{max_redirects: 10})
+      false
+  """
+  @spec failure?(Req.Response.t() | Exception.t()) :: boolean
+  def failure?(%Req.Response{status: status}), do: status >= 500
+  def failure?(%Req.TransportError{}), do: true
+  def failure?(%Req.HTTPError{}), do: true
+  def failure?(%{__exception__: true}), do: false
+
+  defp check_circuit(%Req.Request{} = request) do
+    case options(request) do
+      nil ->
+        request
+
+      opts ->
+        name = Keyword.fetch!(opts, :name)
+        mode = Keyword.get(opts, :mode, :sync)
+
+        case ask(name, mode: mode) do
+          :ok ->
+            request
+
+          {:error, %NotInstalledError{} = error} ->
+            raise error
+
+          {:error, %OpenError{} = error} ->
+            Req.Request.halt(request, error)
+        end
+    end
+  end
+
+  defp record_result({%Req.Request{} = request, response_or_exception}) do
+    case options(request) do
+      nil ->
+        {request, response_or_exception}
+
+      opts ->
+        failure? = Keyword.get(opts, :failure?, &failure?/1)
+
+        _ =
+          if failure?.(response_or_exception) do
+            record_failure(Keyword.fetch!(opts, :name))
+          end
+
+        {request, response_or_exception}
+    end
+  end
+
+  # Validating the options in `attach/2` alone isn't sufficient, because
+  # `Req.merge/2` replaces the whole value of a registered option.
+  defp options(%Req.Request{options: %{circuit_breaker: opts}})
+       when is_list(opts) do
+    opts = Keyword.validate!(opts, @request_opts)
+
+    if Keyword.has_key?(opts, :name) do
+      opts
+    else
+      raise ArgumentError, """
+      missing :name in the :circuit_breaker request option
+
+      Passing :circuit_breaker on a request replaces the options given to
+      attach/2 instead of merging into them, so :name has to be repeated.
+      Pass `circuit_breaker: false` to skip the breaker. Got:
+
+          #{inspect(opts)}
+      """
+    end
+  end
+
+  defp options(%Req.Request{}), do: nil
 end

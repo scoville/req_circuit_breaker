@@ -236,6 +236,275 @@ defmodule ReqCircuitBreakerTest do
     end
   end
 
+  describe "failure?/1" do
+    test "counts a server error" do
+      assert ReqCircuitBreaker.failure?(%Req.Response{status: 500})
+      assert ReqCircuitBreaker.failure?(%Req.Response{status: 503})
+    end
+
+    test "does not count a successful or client error response" do
+      refute ReqCircuitBreaker.failure?(%Req.Response{status: 200})
+      refute ReqCircuitBreaker.failure?(%Req.Response{status: 404})
+      refute ReqCircuitBreaker.failure?(%Req.Response{status: 429})
+    end
+
+    test "counts a transport or protocol error" do
+      assert ReqCircuitBreaker.failure?(%Req.TransportError{reason: :timeout})
+
+      assert ReqCircuitBreaker.failure?(%Req.HTTPError{
+               protocol: :http2,
+               reason: :x
+             })
+    end
+
+    test "does not count an error the client caused" do
+      refute ReqCircuitBreaker.failure?(%Req.TooManyRedirectsError{
+               max_redirects: 1
+             })
+
+      refute ReqCircuitBreaker.failure?(%RuntimeError{message: "oops"})
+    end
+  end
+
+  describe "attach/2" do
+    test "makes the request while the circuit is closed", %{name: name} do
+      :ok = ReqCircuitBreaker.install(name)
+      Req.Test.stub(name, fn conn -> Req.Test.text(conn, "hello") end)
+
+      assert {:ok, %Req.Response{status: 200, body: "hello"}} =
+               Req.get(request(name))
+    end
+
+    test "halts the request while the circuit is open", %{name: name} do
+      :ok = ReqCircuitBreaker.install(name, failures: 0)
+      :ok = ReqCircuitBreaker.record_failure(name)
+      Req.Test.stub(name, fn _conn -> raise "requested" end)
+
+      assert Req.get(request(name)) == {:error, %OpenError{name: name}}
+    end
+
+    test "raises for a breaker that is not installed", %{name: name} do
+      Req.Test.stub(name, fn conn -> Req.Test.text(conn, "hello") end)
+
+      assert_raise NotInstalledError, fn -> Req.get(request(name)) end
+    end
+
+    test "records a server error as a failure", %{name: name} do
+      :ok = ReqCircuitBreaker.install(name, failures: 0)
+      Req.Test.stub(name, fn conn -> Plug.Conn.send_resp(conn, 500, "") end)
+
+      assert {:ok, %Req.Response{status: 500}} = Req.get(request(name))
+      assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
+    end
+
+    test "records a transport error as a failure", %{name: name} do
+      :ok = ReqCircuitBreaker.install(name, failures: 0)
+
+      Req.Test.stub(name, fn conn ->
+        Req.Test.transport_error(conn, :timeout)
+      end)
+
+      assert {:error, %Req.TransportError{}} = Req.get(request(name))
+      assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
+    end
+
+    test "does not record a rate limited response", %{name: name} do
+      :ok = ReqCircuitBreaker.install(name, failures: 0)
+      Req.Test.stub(name, fn conn -> Plug.Conn.send_resp(conn, 429, "") end)
+
+      assert {:ok, %Req.Response{status: 429}} = Req.get(request(name))
+      assert ReqCircuitBreaker.ask(name) == :ok
+    end
+
+    test "records one failure per request, not per attempt", %{name: name} do
+      :ok = ReqCircuitBreaker.install(name, failures: 1)
+      Req.Test.stub(name, fn conn -> Plug.Conn.send_resp(conn, 500, "") end)
+
+      request =
+        Req.merge(request(name),
+          retry: :transient,
+          max_retries: 2,
+          retry_delay: 0,
+          retry_log_level: false
+        )
+
+      assert {:ok, %Req.Response{status: 500}} = Req.request(request)
+      assert ReqCircuitBreaker.ask(name) == :ok
+
+      assert {:ok, %Req.Response{status: 500}} = Req.request(request)
+      assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
+    end
+
+    test "takes a custom failure predicate", %{name: name} do
+      :ok = ReqCircuitBreaker.install(name, failures: 0)
+      Req.Test.stub(name, fn conn -> Plug.Conn.send_resp(conn, 404, "") end)
+
+      request =
+        [plug: {Req.Test, name}, url: "http://circuit.example", retry: false]
+        |> Req.new()
+        |> ReqCircuitBreaker.attach(
+          name: name,
+          failure?: &match?(%Req.Response{status: 404}, &1)
+        )
+
+      assert {:ok, %Req.Response{status: 404}} = Req.get(request)
+      assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
+    end
+
+    test "skips an attached breaker when the option is false", %{name: name} do
+      :ok = ReqCircuitBreaker.install(name, failures: 0)
+      :ok = ReqCircuitBreaker.record_failure(name)
+      Req.Test.stub(name, fn conn -> Req.Test.text(conn, "hello") end)
+
+      assert {:ok, %Req.Response{status: 200}} =
+               Req.get(request(name), circuit_breaker: false)
+    end
+
+    test "requires a name" do
+      assert_raise KeyError, fn ->
+        ReqCircuitBreaker.attach(Req.new(), mode: :sync)
+      end
+    end
+
+    test "raises on an unknown option", %{name: name} do
+      assert_raise ArgumentError, fn ->
+        ReqCircuitBreaker.attach(Req.new(), name: name, melt: true)
+      end
+    end
+
+    test "raises on an unknown option given at request time", %{name: name} do
+      :ok = ReqCircuitBreaker.install(name)
+      Req.Test.stub(name, fn conn -> Req.Test.text(conn, "hello") end)
+
+      assert_raise ArgumentError, fn ->
+        Req.get(request(name), circuit_breaker: [name: name, melt: true])
+      end
+    end
+
+    test "raises when a request-time list omits the name", %{name: name} do
+      :ok = ReqCircuitBreaker.install(name)
+      Req.Test.stub(name, fn conn -> Req.Test.text(conn, "hello") end)
+
+      assert_raise ArgumentError, ~r/missing :name/, fn ->
+        Req.get(request(name), circuit_breaker: [mode: :async_dirty])
+      end
+    end
+
+    test "takes a complete list at request time", %{name: name} do
+      :ok = ReqCircuitBreaker.install(name, failures: 0)
+      Req.Test.stub(name, fn conn -> Plug.Conn.send_resp(conn, 500, "") end)
+
+      assert {:ok, %Req.Response{status: 500}} =
+               Req.get(request(name),
+                 circuit_breaker: [name: name, failure?: fn _ -> false end]
+               )
+
+      assert ReqCircuitBreaker.ask(name) == :ok
+    end
+
+    test "records a failure when http_errors raises", %{name: name} do
+      :ok = ReqCircuitBreaker.install(name, failures: 0)
+      Req.Test.stub(name, fn conn -> Plug.Conn.send_resp(conn, 500, "") end)
+
+      assert_raise RuntimeError, fn ->
+        Req.get(request(name, http_errors: :raise))
+      end
+
+      assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
+    end
+
+    test "attaching twice replaces the first attachment", %{name: name} do
+      :ok = ReqCircuitBreaker.install(name, failures: 1)
+      Req.Test.stub(name, fn conn -> Plug.Conn.send_resp(conn, 500, "") end)
+
+      request =
+        name
+        |> request()
+        |> ReqCircuitBreaker.attach(name: name)
+
+      assert {:ok, %Req.Response{status: 500}} = Req.get(request)
+      assert ReqCircuitBreaker.ask(name) == :ok
+    end
+
+    test "the last attachment wins", %{name: name} do
+      :ok = ReqCircuitBreaker.install(name, failures: 0)
+      Req.Test.stub(name, fn conn -> Plug.Conn.send_resp(conn, 404, "") end)
+
+      request =
+        name
+        |> request()
+        |> ReqCircuitBreaker.attach(
+          name: name,
+          failure?: &match?(%Req.Response{status: 404}, &1)
+        )
+
+      assert {:ok, %Req.Response{status: 404}} = Req.get(request)
+      assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
+    end
+
+    test "checks the circuit before the other request steps", %{name: name} do
+      steps = Enum.map(request(name).request_steps, &elem(&1, 0))
+      assert List.first(steps) == :circuit_breaker
+    end
+
+    test "records after retry and before http errors", %{name: name} do
+      steps = Enum.map(request(name).response_steps, &elem(&1, 0))
+
+      assert Enum.find_index(steps, &(&1 == :retry)) <
+               Enum.find_index(steps, &(&1 == :circuit_breaker))
+
+      assert Enum.find_index(steps, &(&1 == :circuit_breaker)) <
+               Enum.find_index(steps, &(&1 == :handle_http_errors))
+    end
+
+    test "raises if Req registers no http error step", %{name: name} do
+      request = %{Req.new() | response_steps: []}
+
+      assert_raise RuntimeError, ~r/:handle_http_errors/, fn ->
+        ReqCircuitBreaker.attach(request, name: name)
+      end
+    end
+
+    test "records a redirect target failure against the breaker", %{name: name} do
+      :ok = ReqCircuitBreaker.install(name, failures: 0)
+
+      Req.Test.stub(name, fn conn ->
+        case conn.host do
+          "origin.example" ->
+            conn
+            |> Plug.Conn.put_resp_header(
+              "location",
+              "http://elsewhere.example/"
+            )
+            |> Plug.Conn.send_resp(302, "")
+
+          "elsewhere.example" ->
+            Plug.Conn.send_resp(conn, 500, "")
+        end
+      end)
+
+      request =
+        [
+          plug: {Req.Test, name},
+          url: "http://origin.example",
+          retry: false,
+          redirect_log_level: false
+        ]
+        |> Req.new()
+        |> ReqCircuitBreaker.attach(name: name)
+
+      assert {:ok, %Req.Response{status: 500}} = Req.get(request)
+      assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
+    end
+  end
+
+  defp request(name, opts \\ []) do
+    ([plug: {Req.Test, name}, url: "http://circuit.example", retry: false] ++
+       opts)
+    |> Req.new()
+    |> ReqCircuitBreaker.attach(name: name)
+  end
+
   defp attach_handler(name, event) do
     test_pid = self()
 

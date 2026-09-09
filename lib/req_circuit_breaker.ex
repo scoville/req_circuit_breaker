@@ -288,6 +288,9 @@ defmodule ReqCircuitBreaker do
           result | {:error, OpenError.t()}
         when result: term
   def run(name, fun, opts \\ []) when is_function(fun, 0) do
+    opts =
+      Keyword.validate!(opts, [:failure?, :exception_failure?, mode: :sync])
+
     {failure?, opts} = Keyword.pop(opts, :failure?, &error_tuple?/1)
 
     {exception_failure?, opts} =

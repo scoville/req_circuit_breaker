@@ -10,61 +10,11 @@ defmodule ReqCircuitBreaker do
   The counting is done by [`:fuse`](https://hex.pm/packages/fuse), which keeps
   one counter per name in its own process.
 
-  ## Installing
+  A circuit breaker must be installed when the application starts.
+  `attach/2` adds one to a `Req` request, and `run/3` protects any other
+  function.
 
-  A circuit breaker must be installed when the application starts. It is not
-  installed on demand, because the first request would then be unprotected,
-  concurrent first requests would race, and a repeated install would reset a
-  circuit that had just opened.
-
-      defmodule MyApp.Application do
-        use Application
-
-        @impl Application
-        def start(_type, _args) do
-          :ok = ReqCircuitBreaker.install(MyApp.CircuitBreaker.Payments)
-          Supervisor.start_link(children(), strategy: :one_for_one)
-        end
-      end
-
-  Trying to use a circuit breaker without installing it first results in
-  `{:error, %ReqCircuitBreaker.NotInstalledError{}}`.
-
-  ## What counts as a failure
-
-  By default only 5xx responses and transport or protocol errors count as
-  failures.
-
-  A 429 does not count as failure by default. Whether it should depends on the
-  context of the application.
-
-  An error raised by the client, such as a `Req.TooManyRedirectsError` or a
-  decoding error, also does not count as failure.
-
-  You can change the defaults by passing the `:failure?` option. It receives a
-  `t:Req.Response.t/0` or an `t:Exception.t/0`:
-
-      [base_url: "https://payments.example"]
-      |> Req.new()
-      |> ReqCircuitBreaker.attach(
-        name: MyApp.CircuitBreaker.Payments,
-        failure?: fn
-          %Req.Response{status: 429} -> true
-          other -> ReqCircuitBreaker.failure?(other)
-        end
-      )
-
-  You can use `ReqCircuitBreaker` for arbitrary function calls without Req as
-  well by using `run/3`. Its `:failure?` function takes the return value of the
-  given function.
-
-  ## Performance
-
-  `:fuse` keeps one process for the whole VM, and it owns a public ETS table
-  holding each circuit's verdict. There are two read modes: `:async_dirty` reads
-  the ETS table directly; `:sync` sends a message to the process waits for its
-  reply. The failure counts live in the process rather than the table, so
-  recording a failure always sends a message, whichever mode you use.
+  See [README](readme.html) for more details.
 
   ## Telemetry
 
@@ -115,19 +65,40 @@ defmodule ReqCircuitBreaker do
   - `:reset` - how long an open circuit stays open, in milliseconds. Defaults
     to `#{@default_reset}`.
   """
-  @type install_opts :: [
-          failures: non_neg_integer,
-          within: non_neg_integer,
-          reset: non_neg_integer
-        ]
+  @type install_opt ::
+          {:failures, non_neg_integer}
+          | {:within, non_neg_integer}
+          | {:reset, non_neg_integer}
+
+  @typedoc """
+  Options for `run/3`.
+
+  - `:failure?` - a 1-arity function deciding whether the result counts as a
+    failure. The default function only counts `{:error, reason}` tuples as
+    failures.
+  - `:mode` - see `t:mode/0`.
+  """
+  @type run_opt :: {:failure?, (term -> boolean)} | {:mode, mode()}
+
+  @typedoc """
+  Options for `attach/2`.
+
+  - `:name` (required) - the name of the circuit breaker.
+  - `:failure?` - a 1-arity function taking a `Req.Response` or an exception
+    and returning `true` if it counts as a failure. Defaults to `failure?/1`.
+  - `:mode` - see `t:mode/0`.
+  """
+  @type attach_opt ::
+          {:name, name()}
+          | {:failure?, (Req.Response.t() | Exception.t() -> boolean)}
+          | {:mode, mode()}
 
   ## Installing
 
   @doc """
   Installs a circuit breaker.
 
-  Call this once when your application starts. See the module documentation
-  for the options.
+  Call this once when your application starts.
 
   Installing a breaker that already exists resets it.
 
@@ -136,7 +107,7 @@ defmodule ReqCircuitBreaker do
       iex> install(MyApp.CircuitBreaker.Example, failures: 5, reset: 60_000)
       :ok
   """
-  @spec install(name(), install_opts()) :: :ok
+  @spec install(name(), [install_opt()]) :: :ok
   def install(name, opts \\ []) do
     opts =
       Keyword.validate!(opts,
@@ -214,7 +185,7 @@ defmodule ReqCircuitBreaker do
 
   - `:mode` - see `t:mode/0`.
   """
-  @spec ask(name(), mode: mode()) ::
+  @spec ask(name(), [{:mode, mode()}]) ::
           :ok | {:error, OpenError.t() | NotInstalledError.t()}
   def ask(name, opts \\ []) do
     opts = Keyword.validate!(opts, mode: :sync)
@@ -289,20 +260,13 @@ defmodule ReqCircuitBreaker do
   `{:error, %OpenError{}}`. Raises `NotInstalledError` if the breaker does not
   exist.
 
-  ## Options
-
-  - `:failure?` - a 1-arity function deciding whether the result counts as a
-    failure. The default function only counts `{:error, reason}` tuples as
-    failures.
-  - `:mode` - see `t:mode/0`.
-
   ## Examples
 
       iex> install(MyApp.CircuitBreaker.Run)
       iex> run(MyApp.CircuitBreaker.Run, fn -> {:ok, 1} end)
       {:ok, 1}
   """
-  @spec run(name(), (-> result), failure?: (term -> boolean), mode: mode()) ::
+  @spec run(name(), (-> result), [run_opt()]) ::
           result | {:error, OpenError.t()}
         when result: term
   def run(name, fun, opts \\ []) when is_function(fun, 0) do
@@ -333,13 +297,6 @@ defmodule ReqCircuitBreaker do
   The circuit is checked before each attempt, including each retry and each
   redirect hop, and at most one failure is recorded per request.
 
-  ## Options
-
-  - `:name` (required) - the name of the circuit breaker.
-  - `:failure?` - a 1-arity function taking a `Req.Response` or an exception
-    and returning `true` if it counts as a failure. Defaults to `failure?/1`.
-  - `:mode` - see `t:mode/0`.
-
   A request refused by an open circuit returns `{:error, %OpenError{}}` from
   `Req.request/2`, and raises it from `Req.request!/2`.
 
@@ -362,7 +319,7 @@ defmodule ReqCircuitBreaker do
       |> ReqCircuitBreaker.attach(name: MyApp.CircuitBreaker.Payments)
       |> Req.get(url: "/charges")
   """
-  @spec attach(Req.Request.t(), keyword) :: Req.Request.t()
+  @spec attach(Req.Request.t(), [attach_opt()]) :: Req.Request.t()
   def attach(%Req.Request{} = request, opts) do
     opts = Keyword.validate!(opts, @request_opts)
     _name = Keyword.fetch!(opts, :name)
@@ -412,7 +369,7 @@ defmodule ReqCircuitBreaker do
   Returns `true` if a `Req` response or exception counts as a failure of the
   service.
 
-  This is the default for `attach/2`. See module documentation for details.
+  This is the default for `attach/2`.
 
   ## Examples
 

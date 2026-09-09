@@ -1,6 +1,8 @@
 defmodule ReqCircuitBreakerTest do
   use ExUnit.Case, async: true
 
+  import ReqCircuitBreaker.Test
+
   alias ReqCircuitBreaker.NotInstalledError
   alias ReqCircuitBreaker.OpenError
 
@@ -19,20 +21,18 @@ defmodule ReqCircuitBreakerTest do
     end)
   end
 
-  setup context do
-    name = context.test
-    on_exit(fn -> ReqCircuitBreaker.remove(name) end)
-    %{name: name}
-  end
+  setup :circuit_breaker
 
   describe "install/2" do
-    test "installs a circuit breaker", %{name: name} do
+    test "installs a circuit breaker", %{circuit_breaker: name} do
       refute ReqCircuitBreaker.installed?(name)
       assert ReqCircuitBreaker.install(name) == :ok
       assert ReqCircuitBreaker.installed?(name)
     end
 
-    test "resets a circuit breaker that already exists", %{name: name} do
+    test "resets a circuit breaker that already exists", %{
+      circuit_breaker: name
+    } do
       :ok = ReqCircuitBreaker.install(name, failures: 0)
       :ok = ReqCircuitBreaker.record_failure(name)
       assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
@@ -41,13 +41,15 @@ defmodule ReqCircuitBreakerTest do
       assert ReqCircuitBreaker.ask(name) == :ok
     end
 
-    test "raises on an unknown option", %{name: name} do
+    test "raises on an unknown option", %{circuit_breaker: name} do
       assert_raise ArgumentError, fn ->
         ReqCircuitBreaker.install(name, failure: 1)
       end
     end
 
-    test "raises a named error on an invalid option value", %{name: name} do
+    test "raises a named error on an invalid option value", %{
+      circuit_breaker: name
+    } do
       error =
         assert_raise ArgumentError, fn ->
           ReqCircuitBreaker.install(name, within: 1.5)
@@ -62,7 +64,7 @@ defmodule ReqCircuitBreakerTest do
   end
 
   describe "ask/2" do
-    test "returns :ok while the circuit is closed", %{name: name} do
+    test "returns :ok while the circuit is closed", %{circuit_breaker: name} do
       :ok = ReqCircuitBreaker.install(name, failures: 1)
 
       assert ReqCircuitBreaker.ask(name) == :ok
@@ -70,7 +72,7 @@ defmodule ReqCircuitBreakerTest do
       assert ReqCircuitBreaker.ask(name) == :ok
     end
 
-    test "returns an error once the circuit opens", %{name: name} do
+    test "returns an error once the circuit opens", %{circuit_breaker: name} do
       :ok = ReqCircuitBreaker.install(name, failures: 1)
       :ok = ReqCircuitBreaker.record_failure(name)
       :ok = ReqCircuitBreaker.record_failure(name)
@@ -81,14 +83,16 @@ defmodule ReqCircuitBreakerTest do
       assert Exception.message(error) =~ "is open"
     end
 
-    test "returns error for a breaker that is not installed", %{name: name} do
+    test "returns error for a breaker that is not installed", %{
+      circuit_breaker: name
+    } do
       assert {:error, %NotInstalledError{name: ^name} = error} =
                ReqCircuitBreaker.ask(name)
 
       assert Exception.message(error) =~ "is not installed"
     end
 
-    test "answers in :async_dirty mode too", %{name: name} do
+    test "answers in :async_dirty mode too", %{circuit_breaker: name} do
       assert ReqCircuitBreaker.ask(name, mode: :async_dirty) ==
                {:error, %NotInstalledError{name: name}}
 
@@ -101,7 +105,7 @@ defmodule ReqCircuitBreakerTest do
                ReqCircuitBreaker.ask(name, mode: :async_dirty)
     end
 
-    test "raises a named error on an invalid mode", %{name: name} do
+    test "raises a named error on an invalid mode", %{circuit_breaker: name} do
       :ok = ReqCircuitBreaker.install(name)
 
       error =
@@ -117,14 +121,16 @@ defmodule ReqCircuitBreakerTest do
   end
 
   describe "record_failure/1" do
-    test "records a failure", %{name: name} do
+    test "records a failure", %{circuit_breaker: name} do
       :ok = ReqCircuitBreaker.install(name, failures: 0)
 
       assert ReqCircuitBreaker.record_failure(name) == :ok
       assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
     end
 
-    test "keeps the circuit closed up to the threshold", %{name: name} do
+    test "keeps the circuit closed up to the threshold", %{
+      circuit_breaker: name
+    } do
       :ok = ReqCircuitBreaker.install(name, failures: 2)
 
       assert ReqCircuitBreaker.record_failure(name) == :ok
@@ -135,12 +141,14 @@ defmodule ReqCircuitBreakerTest do
       assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
     end
 
-    test "returns error for a breaker that is not installed", %{name: name} do
+    test "returns error for a breaker that is not installed", %{
+      circuit_breaker: name
+    } do
       assert ReqCircuitBreaker.record_failure(name) ==
                {:error, %NotInstalledError{name: name}}
     end
 
-    test "emits an event when a failure is recorded", %{name: name} do
+    test "emits an event when a failure is recorded", %{circuit_breaker: name} do
       attach_handler(name, [:req_circuit_breaker, :failure])
       :ok = ReqCircuitBreaker.install(name)
       :ok = ReqCircuitBreaker.record_failure(name)
@@ -148,7 +156,7 @@ defmodule ReqCircuitBreakerTest do
       assert_receive {:event, [:req_circuit_breaker, :failure], %{name: ^name}}
     end
 
-    test "emits an event when a call is refused", %{name: name} do
+    test "emits an event when a call is refused", %{circuit_breaker: name} do
       attach_handler(name, [:req_circuit_breaker, :refused])
       :ok = ReqCircuitBreaker.install(name, failures: 0)
       :ok = ReqCircuitBreaker.record_failure(name)
@@ -157,7 +165,9 @@ defmodule ReqCircuitBreakerTest do
       assert_receive {:event, [:req_circuit_breaker, :refused], %{name: ^name}}
     end
 
-    test "emits no event for a breaker that is not installed", %{name: name} do
+    test "emits no event for a breaker that is not installed", %{
+      circuit_breaker: name
+    } do
       attach_handler(name, [:req_circuit_breaker, :failure])
 
       assert {:error, %NotInstalledError{}} =
@@ -168,7 +178,7 @@ defmodule ReqCircuitBreakerTest do
   end
 
   describe "reset/1" do
-    test "closes an open circuit", %{name: name} do
+    test "closes an open circuit", %{circuit_breaker: name} do
       :ok = ReqCircuitBreaker.install(name, failures: 0)
       :ok = ReqCircuitBreaker.record_failure(name)
       assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
@@ -177,31 +187,35 @@ defmodule ReqCircuitBreakerTest do
       assert ReqCircuitBreaker.ask(name) == :ok
     end
 
-    test "returns error for a breaker that is not installed", %{name: name} do
+    test "returns error for a breaker that is not installed", %{
+      circuit_breaker: name
+    } do
       assert ReqCircuitBreaker.reset(name) ==
                {:error, %NotInstalledError{name: name}}
     end
   end
 
   describe "remove/1" do
-    test "removes a circuit breaker", %{name: name} do
+    test "removes a circuit breaker", %{circuit_breaker: name} do
       :ok = ReqCircuitBreaker.install(name)
       assert ReqCircuitBreaker.remove(name) == :ok
       refute ReqCircuitBreaker.installed?(name)
     end
 
-    test "returns :ok for a breaker that is not installed", %{name: name} do
+    test "returns :ok for a breaker that is not installed", %{
+      circuit_breaker: name
+    } do
       assert ReqCircuitBreaker.remove(name) == :ok
     end
   end
 
   describe "run/3" do
-    test "returns the result of the function", %{name: name} do
+    test "returns the result of the function", %{circuit_breaker: name} do
       :ok = ReqCircuitBreaker.install(name)
       assert ReqCircuitBreaker.run(name, fn -> {:ok, 1} end) == {:ok, 1}
     end
 
-    test "records an error tuple as a failure", %{name: name} do
+    test "records an error tuple as a failure", %{circuit_breaker: name} do
       :ok = ReqCircuitBreaker.install(name, failures: 0)
 
       assert ReqCircuitBreaker.run(name, fn -> {:error, :nope} end) ==
@@ -210,7 +224,7 @@ defmodule ReqCircuitBreakerTest do
       assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
     end
 
-    test "takes a custom failure predicate", %{name: name} do
+    test "takes a custom failure predicate", %{circuit_breaker: name} do
       :ok = ReqCircuitBreaker.install(name, failures: 0)
 
       assert ReqCircuitBreaker.run(name, fn -> :bad end,
@@ -221,7 +235,7 @@ defmodule ReqCircuitBreakerTest do
       assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
     end
 
-    test "does not call the function while open", %{name: name} do
+    test "does not call the function while open", %{circuit_breaker: name} do
       :ok = ReqCircuitBreaker.install(name, failures: 0)
       :ok = ReqCircuitBreaker.record_failure(name)
 
@@ -229,7 +243,7 @@ defmodule ReqCircuitBreakerTest do
                {:error, %OpenError{name: name}}
     end
 
-    test "raises for a breaker that is not installed", %{name: name} do
+    test "raises for a breaker that is not installed", %{circuit_breaker: name} do
       assert_raise NotInstalledError, fn ->
         ReqCircuitBreaker.run(name, fn -> :ok end)
       end
@@ -267,7 +281,9 @@ defmodule ReqCircuitBreakerTest do
   end
 
   describe "attach/2" do
-    test "makes the request while the circuit is closed", %{name: name} do
+    test "makes the request while the circuit is closed", %{
+      circuit_breaker: name
+    } do
       :ok = ReqCircuitBreaker.install(name)
       Req.Test.stub(name, fn conn -> Req.Test.text(conn, "hello") end)
 
@@ -275,7 +291,7 @@ defmodule ReqCircuitBreakerTest do
                Req.get(request(name))
     end
 
-    test "halts the request while the circuit is open", %{name: name} do
+    test "halts the request while the circuit is open", %{circuit_breaker: name} do
       :ok = ReqCircuitBreaker.install(name, failures: 0)
       :ok = ReqCircuitBreaker.record_failure(name)
       Req.Test.stub(name, fn _conn -> raise "requested" end)
@@ -283,13 +299,13 @@ defmodule ReqCircuitBreakerTest do
       assert Req.get(request(name)) == {:error, %OpenError{name: name}}
     end
 
-    test "raises for a breaker that is not installed", %{name: name} do
+    test "raises for a breaker that is not installed", %{circuit_breaker: name} do
       Req.Test.stub(name, fn conn -> Req.Test.text(conn, "hello") end)
 
       assert_raise NotInstalledError, fn -> Req.get(request(name)) end
     end
 
-    test "records a server error as a failure", %{name: name} do
+    test "records a server error as a failure", %{circuit_breaker: name} do
       :ok = ReqCircuitBreaker.install(name, failures: 0)
       Req.Test.stub(name, fn conn -> Plug.Conn.send_resp(conn, 500, "") end)
 
@@ -297,7 +313,7 @@ defmodule ReqCircuitBreakerTest do
       assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
     end
 
-    test "records a transport error as a failure", %{name: name} do
+    test "records a transport error as a failure", %{circuit_breaker: name} do
       :ok = ReqCircuitBreaker.install(name, failures: 0)
 
       Req.Test.stub(name, fn conn ->
@@ -308,7 +324,7 @@ defmodule ReqCircuitBreakerTest do
       assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
     end
 
-    test "does not record a rate limited response", %{name: name} do
+    test "does not record a rate limited response", %{circuit_breaker: name} do
       :ok = ReqCircuitBreaker.install(name, failures: 0)
       Req.Test.stub(name, fn conn -> Plug.Conn.send_resp(conn, 429, "") end)
 
@@ -316,7 +332,9 @@ defmodule ReqCircuitBreakerTest do
       assert ReqCircuitBreaker.ask(name) == :ok
     end
 
-    test "records one failure per request, not per attempt", %{name: name} do
+    test "records one failure per request, not per attempt", %{
+      circuit_breaker: name
+    } do
       :ok = ReqCircuitBreaker.install(name, failures: 1)
       Req.Test.stub(name, fn conn -> Plug.Conn.send_resp(conn, 500, "") end)
 
@@ -335,7 +353,7 @@ defmodule ReqCircuitBreakerTest do
       assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
     end
 
-    test "takes a custom failure predicate", %{name: name} do
+    test "takes a custom failure predicate", %{circuit_breaker: name} do
       :ok = ReqCircuitBreaker.install(name, failures: 0)
       Req.Test.stub(name, fn conn -> Plug.Conn.send_resp(conn, 404, "") end)
 
@@ -351,7 +369,9 @@ defmodule ReqCircuitBreakerTest do
       assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
     end
 
-    test "skips an attached breaker when the option is false", %{name: name} do
+    test "skips an attached breaker when the option is false", %{
+      circuit_breaker: name
+    } do
       :ok = ReqCircuitBreaker.install(name, failures: 0)
       :ok = ReqCircuitBreaker.record_failure(name)
       Req.Test.stub(name, fn conn -> Req.Test.text(conn, "hello") end)
@@ -366,13 +386,15 @@ defmodule ReqCircuitBreakerTest do
       end
     end
 
-    test "raises on an unknown option", %{name: name} do
+    test "raises on an unknown option", %{circuit_breaker: name} do
       assert_raise ArgumentError, fn ->
         ReqCircuitBreaker.attach(Req.new(), name: name, melt: true)
       end
     end
 
-    test "raises on an unknown option given at request time", %{name: name} do
+    test "raises on an unknown option given at request time", %{
+      circuit_breaker: name
+    } do
       :ok = ReqCircuitBreaker.install(name)
       Req.Test.stub(name, fn conn -> Req.Test.text(conn, "hello") end)
 
@@ -381,7 +403,9 @@ defmodule ReqCircuitBreakerTest do
       end
     end
 
-    test "raises when a request-time list omits the name", %{name: name} do
+    test "raises when a request-time list omits the name", %{
+      circuit_breaker: name
+    } do
       :ok = ReqCircuitBreaker.install(name)
       Req.Test.stub(name, fn conn -> Req.Test.text(conn, "hello") end)
 
@@ -390,7 +414,7 @@ defmodule ReqCircuitBreakerTest do
       end
     end
 
-    test "takes a complete list at request time", %{name: name} do
+    test "takes a complete list at request time", %{circuit_breaker: name} do
       :ok = ReqCircuitBreaker.install(name, failures: 0)
       Req.Test.stub(name, fn conn -> Plug.Conn.send_resp(conn, 500, "") end)
 
@@ -402,7 +426,7 @@ defmodule ReqCircuitBreakerTest do
       assert ReqCircuitBreaker.ask(name) == :ok
     end
 
-    test "records a failure when http_errors raises", %{name: name} do
+    test "records a failure when http_errors raises", %{circuit_breaker: name} do
       :ok = ReqCircuitBreaker.install(name, failures: 0)
       Req.Test.stub(name, fn conn -> Plug.Conn.send_resp(conn, 500, "") end)
 
@@ -413,7 +437,9 @@ defmodule ReqCircuitBreakerTest do
       assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
     end
 
-    test "attaching twice replaces the first attachment", %{name: name} do
+    test "attaching twice replaces the first attachment", %{
+      circuit_breaker: name
+    } do
       :ok = ReqCircuitBreaker.install(name, failures: 1)
       Req.Test.stub(name, fn conn -> Plug.Conn.send_resp(conn, 500, "") end)
 
@@ -426,7 +452,7 @@ defmodule ReqCircuitBreakerTest do
       assert ReqCircuitBreaker.ask(name) == :ok
     end
 
-    test "the last attachment wins", %{name: name} do
+    test "the last attachment wins", %{circuit_breaker: name} do
       :ok = ReqCircuitBreaker.install(name, failures: 0)
       Req.Test.stub(name, fn conn -> Plug.Conn.send_resp(conn, 404, "") end)
 
@@ -442,12 +468,14 @@ defmodule ReqCircuitBreakerTest do
       assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
     end
 
-    test "checks the circuit before the other request steps", %{name: name} do
+    test "checks the circuit before the other request steps", %{
+      circuit_breaker: name
+    } do
       steps = Enum.map(request(name).request_steps, &elem(&1, 0))
       assert List.first(steps) == :circuit_breaker
     end
 
-    test "records after retry and before http errors", %{name: name} do
+    test "records after retry and before http errors", %{circuit_breaker: name} do
       steps = Enum.map(request(name).response_steps, &elem(&1, 0))
 
       assert Enum.find_index(steps, &(&1 == :retry)) <
@@ -457,7 +485,7 @@ defmodule ReqCircuitBreakerTest do
                Enum.find_index(steps, &(&1 == :handle_http_errors))
     end
 
-    test "raises if Req registers no http error step", %{name: name} do
+    test "raises if Req registers no http error step", %{circuit_breaker: name} do
       request = %{Req.new() | response_steps: []}
 
       assert_raise RuntimeError, ~r/:handle_http_errors/, fn ->
@@ -465,7 +493,9 @@ defmodule ReqCircuitBreakerTest do
       end
     end
 
-    test "records a redirect target failure against the breaker", %{name: name} do
+    test "records a redirect target failure against the breaker", %{
+      circuit_breaker: name
+    } do
       :ok = ReqCircuitBreaker.install(name, failures: 0)
 
       Req.Test.stub(name, fn conn ->

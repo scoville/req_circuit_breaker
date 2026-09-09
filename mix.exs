@@ -35,7 +35,8 @@ defmodule ReqCircuitBreaker.MixProject do
         # dependency fixed an issue)
         list_unused_filters: true,
         # Set location of the persistent lookup table
-        plt_local_path: ".plts"
+        plt_local_path: ".plts",
+        plt_add_apps: [:ex_unit]
       ]
     ]
   end

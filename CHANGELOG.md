@@ -19,5 +19,7 @@ adheres to
 - Add `ReqCircuitBreaker.attach/2` for protecting a `Req` request.
 - Add `ReqCircuitBreaker.failure?/1`, the default function for deciding whether
   a response or exception counts as a failure of the service.
+- Add `ReqCircuitBreaker.Test.circuit_breaker/1`, which defines a setup
+  callback.
 
 [Unreleased]: https://github.com/scoville/req_circuit_breaker/commits/main

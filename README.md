@@ -123,14 +123,18 @@ the given function.
 ### Tests
 
 A circuit breaker is state outside the test process. Tests that install a
-breaker under the same name cannot run concurrently. Install a breaker per
-test and remove it afterwards:
+breaker under the same name cannot run concurrently.
+`ReqCircuitBreaker.Test.circuit_breaker/1` names one after the running test
+and removes it afterwards:
 
 ```elixir
-setup context do
-  :ok = ReqCircuitBreaker.install(context.test, failures: 0)
-  on_exit(fn -> ReqCircuitBreaker.remove(context.test) end)
-  %{breaker: context.test}
+import ReqCircuitBreaker.Test
+
+setup :circuit_breaker
+
+test "the circuit opens after a failure", %{circuit_breaker: name} do
+  :ok = ReqCircuitBreaker.install(name, failures: 0)
+  # ...
 end
 ```
 

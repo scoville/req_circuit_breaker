@@ -43,5 +43,6 @@ option to read the circuit without the server" rather than "added option" or
 ## Tests that share a breaker
 
 A circuit breaker is state outside the test process. Tests that install a
-breaker under the same name cannot run concurrently. Name the breaker after the
-test and remove it in `on_exit`.
+breaker under the same name cannot run concurrently. Use
+`ReqCircuitBreaker.Test.circuit_breaker/1` as a setup callback, which names the
+breaker after the test and removes it in `on_exit`.

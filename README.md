@@ -102,8 +102,12 @@ context of the application.
 An error raised by the client, such as a `Req.TooManyRedirectsError` or a
 decoding error, also does not count as failure.
 
-You can change the defaults by passing the `:failure?` option. It receives a
-`Req.Response` or an exception:
+A raise, a `throw` or an exit is recorded as a failure and then re-raised unchanged.
+
+You can change the defaults by passing the `:failure?` and `:exception_failure?`
+option. The `:failure?` function receives receives a `Req.Response` or an
+exception as returned by Req, and the `:exception_failure?` function receives
+the kind and the reason.
 
 ```elixir
 [base_url: "https://payments.example"]
@@ -113,6 +117,10 @@ You can change the defaults by passing the `:failure?` option. It receives a
   failure?: fn
     %Req.Response{status: 429} -> true
     other -> ReqCircuitBreaker.failure?(other)
+  end,
+  exception_failure?: fn
+    :exit, :timeout -> true
+    _kind, _reason -> false
   end
 )
 ```

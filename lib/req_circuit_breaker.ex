@@ -76,9 +76,15 @@ defmodule ReqCircuitBreaker do
   - `:failure?` - a 1-arity function deciding whether the result counts as a
     failure. The default function only counts `{:error, reason}` tuples as
     failures.
+  - `:exception_failure?` - a 2-arity function taking the kind and the reason
+    of a raise, a `throw` or an exit, and deciding whether it counts as a
+    failure. The default function counts every exception.
   - `:mode` - see `t:mode/0`.
   """
-  @type run_opt :: {:failure?, (term -> boolean)} | {:mode, mode()}
+  @type run_opt ::
+          {:failure?, (term -> boolean)}
+          | {:exception_failure?, (:error | :throw | :exit, term -> boolean)}
+          | {:mode, mode()}
 
   @typedoc """
   Options for `attach/2`.
@@ -268,6 +274,10 @@ defmodule ReqCircuitBreaker do
   `{:error, %OpenError{}}`. Raises `NotInstalledError` if the breaker does not
   exist.
 
+  A raise, a `throw` or an exit in the function is recorded as a failure and
+  then re-raised unchanged, with the original stacktrace. Pass
+  `:exception_failure?` to specify which exceptions to count as failure.
+
   ## Examples
 
       iex> install(MyApp.CircuitBreaker.Run)
@@ -280,11 +290,20 @@ defmodule ReqCircuitBreaker do
   def run(name, fun, opts \\ []) when is_function(fun, 0) do
     {failure?, opts} = Keyword.pop(opts, :failure?, &error_tuple?/1)
 
+    {exception_failure?, opts} =
+      Keyword.pop(opts, :exception_failure?, &exception_failure?/2)
+
     case ask(name, opts) do
       :ok ->
-        result = fun.()
-        _ = if failure?.(result), do: record_failure(name)
-        result
+        try do
+          result = fun.()
+          _ = if failure?.(result), do: record_failure(name)
+          result
+        catch
+          kind, reason ->
+            _ = if exception_failure?.(kind, reason), do: record_failure(name)
+            :erlang.raise(kind, reason, __STACKTRACE__)
+        end
 
       {:error, %NotInstalledError{} = error} ->
         raise error
@@ -296,6 +315,8 @@ defmodule ReqCircuitBreaker do
 
   defp error_tuple?({:error, _}), do: true
   defp error_tuple?(_result), do: false
+
+  defp exception_failure?(_kind, _reason), do: true
 
   ## Req integration
 

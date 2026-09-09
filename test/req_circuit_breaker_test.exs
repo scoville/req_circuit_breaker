@@ -252,6 +252,76 @@ defmodule ReqCircuitBreakerTest do
         ReqCircuitBreaker.run(name, fn -> :ok end)
       end
     end
+
+    test "records a raise as a failure and re-raises it", %{
+      circuit_breaker: name
+    } do
+      :ok = ReqCircuitBreaker.install(name, failures: 0)
+
+      assert_raise RuntimeError, "service exploded", fn ->
+        ReqCircuitBreaker.run(name, fn -> raise "service exploded" end)
+      end
+
+      assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
+    end
+
+    test "keeps the stacktrace of a raise", %{circuit_breaker: name} do
+      :ok = ReqCircuitBreaker.install(name)
+
+      stacktrace =
+        try do
+          ReqCircuitBreaker.run(name, fn -> raise "service exploded" end)
+        rescue
+          RuntimeError -> __STACKTRACE__
+        end
+
+      assert {__MODULE__, _, _, _} = hd(stacktrace)
+    end
+
+    test "records a throw as a failure and re-throws it", %{
+      circuit_breaker: name
+    } do
+      :ok = ReqCircuitBreaker.install(name, failures: 0)
+
+      assert catch_throw(ReqCircuitBreaker.run(name, fn -> throw(:nope) end)) ==
+               :nope
+
+      assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
+    end
+
+    test "records an exit as a failure and re-exits", %{circuit_breaker: name} do
+      :ok = ReqCircuitBreaker.install(name, failures: 0)
+
+      assert catch_exit(ReqCircuitBreaker.run(name, fn -> exit(:timeout) end)) ==
+               :timeout
+
+      assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
+    end
+
+    test "takes a custom exception predicate", %{circuit_breaker: name} do
+      :ok = ReqCircuitBreaker.install(name, failures: 0)
+
+      exception_failure? = fn
+        :exit, :timeout -> true
+        _kind, _reason -> false
+      end
+
+      assert_raise RuntimeError, fn ->
+        ReqCircuitBreaker.run(name, fn -> raise "a bug in my own code" end,
+          exception_failure?: exception_failure?
+        )
+      end
+
+      assert ReqCircuitBreaker.ask(name) == :ok
+
+      catch_exit(
+        ReqCircuitBreaker.run(name, fn -> exit(:timeout) end,
+          exception_failure?: exception_failure?
+        )
+      )
+
+      assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
+    end
   end
 
   describe "failure?/1" do

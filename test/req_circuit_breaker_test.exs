@@ -609,6 +609,27 @@ defmodule ReqCircuitBreakerTest do
     |> ReqCircuitBreaker.attach(name: name)
   end
 
+  describe "Test.circuit_breaker/1" do
+    test "names the breaker after the test", %{circuit_breaker: name} do
+      assert name ==
+               :"test Test.circuit_breaker/1 names the breaker after the test"
+    end
+
+    test "raises for a context with no test name" do
+      error =
+        assert_raise ArgumentError, fn ->
+          ReqCircuitBreaker.Test.circuit_breaker(%{
+            async: true,
+            module: __MODULE__
+          })
+        end
+
+      message = Exception.message(error)
+      assert message =~ "setup"
+      assert message =~ ":module"
+    end
+  end
+
   defp attach_handler(name, event) do
     test_pid = self()
 

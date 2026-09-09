@@ -7,6 +7,8 @@ adheres to
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-09
+
 ### Added
 
 - Add `ReqCircuitBreaker.install/2`, `ReqCircuitBreaker.installed?/1`,
@@ -22,4 +24,5 @@ adheres to
 - Add `ReqCircuitBreaker.Test.circuit_breaker/1`, which defines a setup
   callback.
 
-[Unreleased]: https://github.com/scoville/req_circuit_breaker/commits/main
+[Unreleased]: https://github.com/scoville/req_circuit_breaker/compare/0.1.0...HEAD
+[0.1.0]: https://github.com/scoville/req_circuit_breaker/releases/tag/0.1.0

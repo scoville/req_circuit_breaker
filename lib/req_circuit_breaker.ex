@@ -23,7 +23,7 @@ defmodule ReqCircuitBreaker do
   - `[:req_circuit_breaker, :failure]` - a failure was recorded. Metadata:
     `:name`.
 
-  Neither event has any measurements.
+  Both events measure `:system_time`.
   """
 
   alias ReqCircuitBreaker.NotInstalledError
@@ -214,7 +214,11 @@ defmodule ReqCircuitBreaker do
   end
 
   defp refused(name) do
-    :telemetry.execute([:req_circuit_breaker, :refused], %{}, %{name: name})
+    :telemetry.execute(
+      [:req_circuit_breaker, :refused],
+      %{system_time: System.system_time()},
+      %{name: name}
+    )
 
     %OpenError{name: name}
   end
@@ -234,7 +238,11 @@ defmodule ReqCircuitBreaker do
         {:error, %NotInstalledError{name: name}}
 
       _open_or_closed ->
-        :telemetry.execute([:req_circuit_breaker, :failure], %{}, %{name: name})
+        :telemetry.execute(
+          [:req_circuit_breaker, :failure],
+          %{system_time: System.system_time()},
+          %{name: name}
+        )
 
         :fuse.melt(name)
     end

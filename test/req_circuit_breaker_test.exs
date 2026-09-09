@@ -153,7 +153,10 @@ defmodule ReqCircuitBreakerTest do
       :ok = ReqCircuitBreaker.install(name)
       :ok = ReqCircuitBreaker.record_failure(name)
 
-      assert_receive {:event, [:req_circuit_breaker, :failure], %{name: ^name}}
+      assert_receive {:event, [:req_circuit_breaker, :failure],
+                      %{system_time: system_time}, %{name: ^name}}
+
+      assert is_integer(system_time)
     end
 
     test "emits an event when a call is refused", %{circuit_breaker: name} do
@@ -162,7 +165,8 @@ defmodule ReqCircuitBreakerTest do
       :ok = ReqCircuitBreaker.record_failure(name)
       assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
 
-      assert_receive {:event, [:req_circuit_breaker, :refused], %{name: ^name}}
+      assert_receive {:event, [:req_circuit_breaker, :refused],
+                      %{system_time: _}, %{name: ^name}}
     end
 
     test "emits no event for a breaker that is not installed", %{
@@ -173,7 +177,7 @@ defmodule ReqCircuitBreakerTest do
       assert {:error, %NotInstalledError{}} =
                ReqCircuitBreaker.record_failure(name)
 
-      refute_receive {:event, [:req_circuit_breaker, :failure], _metadata}
+      refute_receive {:event, [:req_circuit_breaker, :failure], _, _}
     end
   end
 
@@ -541,8 +545,8 @@ defmodule ReqCircuitBreakerTest do
     :telemetry.attach(
       {__MODULE__, name},
       event,
-      fn event, _measurements, metadata, _config ->
-        send(test_pid, {:event, event, metadata})
+      fn event, measurements, metadata, _config ->
+        send(test_pid, {:event, event, measurements, metadata})
       end,
       nil
     )

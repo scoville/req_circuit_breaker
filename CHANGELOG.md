@@ -12,5 +12,7 @@ format. This project adheres to [Semantic Versioning](https://semver.org/spec/v2
   for managing a circuit breaker.
 - Add `ReqCircuitBreaker.ask/2` for checking a circuit.
 - Add `ReqCircuitBreaker.record_failure/1` for recording a failure.
+- Add `ReqCircuitBreaker.run/3` for running any function under a circuit
+  breaker.
 
 [Unreleased]: https://github.com/scoville/req_circuit_breaker/commits/main

@@ -11,7 +11,8 @@ defmodule ReqCircuitBreakerTest do
       Enum.each(
         [
           MyApp.CircuitBreaker.Example,
-          MyApp.CircuitBreaker.Installed
+          MyApp.CircuitBreaker.Installed,
+          MyApp.CircuitBreaker.Run
         ],
         &ReqCircuitBreaker.remove/1
       )
@@ -191,6 +192,47 @@ defmodule ReqCircuitBreakerTest do
 
     test "returns :ok for a breaker that is not installed", %{name: name} do
       assert ReqCircuitBreaker.remove(name) == :ok
+    end
+  end
+
+  describe "run/3" do
+    test "returns the result of the function", %{name: name} do
+      :ok = ReqCircuitBreaker.install(name)
+      assert ReqCircuitBreaker.run(name, fn -> {:ok, 1} end) == {:ok, 1}
+    end
+
+    test "records an error tuple as a failure", %{name: name} do
+      :ok = ReqCircuitBreaker.install(name, failures: 0)
+
+      assert ReqCircuitBreaker.run(name, fn -> {:error, :nope} end) ==
+               {:error, :nope}
+
+      assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
+    end
+
+    test "takes a custom failure predicate", %{name: name} do
+      :ok = ReqCircuitBreaker.install(name, failures: 0)
+
+      assert ReqCircuitBreaker.run(name, fn -> :bad end,
+               failure?: &(&1 == :bad)
+             ) ==
+               :bad
+
+      assert {:error, %OpenError{}} = ReqCircuitBreaker.ask(name)
+    end
+
+    test "does not call the function while open", %{name: name} do
+      :ok = ReqCircuitBreaker.install(name, failures: 0)
+      :ok = ReqCircuitBreaker.record_failure(name)
+
+      assert ReqCircuitBreaker.run(name, fn -> raise "called" end) ==
+               {:error, %OpenError{name: name}}
+    end
+
+    test "raises for a breaker that is not installed", %{name: name} do
+      assert_raise NotInstalledError, fn ->
+        ReqCircuitBreaker.run(name, fn -> :ok end)
+      end
     end
   end
 

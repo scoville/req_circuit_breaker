@@ -251,4 +251,47 @@ defmodule ReqCircuitBreaker do
       {:error, :not_found} -> {:error, %NotInstalledError{name: name}}
     end
   end
+
+  @doc """
+  Calls a function through a circuit breaker and returns its result.
+
+  If the circuit is open, the function is not called and the return value is
+  `{:error, %OpenError{}}`. Raises `NotInstalledError` if the breaker does not
+  exist.
+
+  ## Options
+
+  - `:failure?` - a 1-arity function deciding whether the result counts as a
+    failure. The default function only counts `{:error, reason}` tuples as
+    failures.
+  - `:mode` - see `t:mode/0`.
+
+  ## Examples
+
+      iex> install(MyApp.CircuitBreaker.Run)
+      iex> run(MyApp.CircuitBreaker.Run, fn -> {:ok, 1} end)
+      {:ok, 1}
+  """
+  @spec run(name(), (-> result), failure?: (term -> boolean), mode: mode()) ::
+          result | {:error, OpenError.t()}
+        when result: term
+  def run(name, fun, opts \\ []) when is_function(fun, 0) do
+    {failure?, opts} = Keyword.pop(opts, :failure?, &error_tuple?/1)
+
+    case ask(name, opts) do
+      :ok ->
+        result = fun.()
+        _ = if failure?.(result), do: record_failure(name)
+        result
+
+      {:error, %NotInstalledError{} = error} ->
+        raise error
+
+      {:error, %OpenError{}} = error ->
+        error
+    end
+  end
+
+  defp error_tuple?({:error, _}), do: true
+  defp error_tuple?(_result), do: false
 end

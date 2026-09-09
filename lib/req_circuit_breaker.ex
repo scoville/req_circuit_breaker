@@ -300,11 +300,15 @@ defmodule ReqCircuitBreaker do
       :ok ->
         try do
           result = fun.()
-          _ = if failure?.(result), do: record_failure(name)
+          _ = if failure?.(result), do: record_failure_safely(name)
           result
         catch
           kind, reason ->
-            _ = if exception_failure?.(kind, reason), do: record_failure(name)
+            _ =
+              if exception_failure?.(kind, reason) do
+                record_failure_safely(name)
+              end
+
             :erlang.raise(kind, reason, __STACKTRACE__)
         end
 
@@ -320,6 +324,14 @@ defmodule ReqCircuitBreaker do
   defp error_tuple?(_result), do: false
 
   defp exception_failure?(_kind, _reason), do: true
+
+  # `:fuse.melt/1` is a `GenServer` call and can exit under load, which would
+  # replace the result or the caller's exception if we didn't catch it.
+  defp record_failure_safely(name) do
+    record_failure(name)
+  catch
+    _kind, _reason -> {:error, :not_recorded}
+  end
 
   ## Req integration
 
@@ -455,7 +467,7 @@ defmodule ReqCircuitBreaker do
 
         _ =
           if failure?.(response_or_exception) do
-            record_failure(Keyword.fetch!(opts, :name))
+            record_failure_safely(Keyword.fetch!(opts, :name))
           end
 
         {request, response_or_exception}
